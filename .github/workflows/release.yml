@@ -43,7 +43,7 @@ jobs:
           mkdir -p dist
           docker run --rm --platform linux/amd64 -v "$PWD:/src" -w /src \
             -e CGO_ENABLED=1 -e GOOS=linux -e GOARCH=amd64 \
-            golang:1.24-bookworm sh -ec \
+            golang:1.20-buster sh -ec \
             'go test -mod=vendor . && go build -mod=vendor -trimpath -buildvcs=false -buildmode=c-shared -ldflags="-s -w" -o dist/zcode.so .'
       - name: Package Linux amd64
         shell: bash
