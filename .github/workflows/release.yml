@@ -1,0 +1,133 @@
+name: Build and release plugins
+
+on:
+  push:
+    branches:
+      - '**'
+    tags:
+      - 'v*'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check plugin version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(grep -oE 'pluginVersion[[:space:]]*=[[:space:]]*"[^"]+"' plugin.go | head -1 | sed -E 's/.*"([^"]+)".*/\1/')"
+          test -n "$version"
+          test "$version" != null
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            test "$GITHUB_REF_NAME" = "v$version"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  linux-amd64:
+    needs: metadata
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test and build on Debian 12
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          docker run --rm --platform linux/amd64 -v "$PWD:/src" -w /src \
+            -e CGO_ENABLED=1 -e GOOS=linux -e GOARCH=amd64 \
+            golang:1.24-bookworm sh -ec \
+            'go test -mod=vendor . && go build -mod=vendor -trimpath -buildmode=c-shared -ldflags="-s -w" -o dist/zcode.so .'
+      - name: Package Linux amd64
+        shell: bash
+        run: |
+          set -euo pipefail
+          file dist/zcode.so | grep -q 'ELF 64-bit.*x86-64'
+          archive="dist/zcode_${{ needs.metadata.outputs.version }}_linux_amd64.zip"
+          zip -j "$archive" dist/zcode.so
+          test "$(unzip -Z1 "$archive")" = zcode.so
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-linux-amd64
+          path: dist/zcode_*.zip
+          if-no-files-found: error
+
+  darwin-arm64:
+    needs: metadata
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: false
+      - name: Test and build native macOS library
+        shell: bash
+        env:
+          CGO_ENABLED: '1'
+          GOOS: darwin
+          GOARCH: arm64
+        run: |
+          set -euo pipefail
+          go test -mod=vendor .
+          mkdir -p dist
+          go build -mod=vendor -trimpath -buildmode=c-shared -ldflags='-s -w' -o dist/zcode.dylib .
+      - name: Package macOS arm64
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(lipo -archs dist/zcode.dylib)" = 'arm64'
+          archive="dist/zcode_${{ needs.metadata.outputs.version }}_darwin_arm64.zip"
+          zip -j "$archive" dist/zcode.dylib
+          test "$(unzip -Z1 "$archive")" = zcode.dylib
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-darwin-arm64
+          path: dist/zcode_*.zip
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [metadata, linux-amd64, darwin-arm64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          merge-multiple: true
+          path: dist
+      - name: Verify archives and write checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          version='${{ needs.metadata.outputs.version }}'
+          for spec in linux_amd64:so darwin_arm64:dylib; do
+            platform="${spec%%:*}"
+            extension="${spec#*:}"
+            archive="zcode_${version}_${platform}.zip"
+            test -f "$archive"
+            test "$(unzip -Z1 "$archive")" = "zcode.$extension"
+          done
+          sha256sum zcode_*.zip > checksums.txt
+          sha256sum -c checksums.txt
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/zcode_*.zip dist/checksums.txt --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$GITHUB_REF_NAME" dist/zcode_*.zip dist/checksums.txt --title "$GITHUB_REF_NAME" --generate-notes --repo "$GITHUB_REPOSITORY"
+          fi

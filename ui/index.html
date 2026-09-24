@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZCode 反代</title>
+<style>
+:root {
+  --bg-primary: #f0eee8;
+  --bg-secondary: #faf9f5;
+  --bg-tertiary: #e9e6df;
+  --text-primary: #2d2a26;
+  --text-secondary: #6d6760;
+  --border-color: #e3e1db;
+  --primary-color: #8b8680;
+  --error-color: #b3261e;
+  --ok-color: #188038;
+  --radius: 8px;
+}
+[data-theme="dark"] {
+  --bg-primary: #1d1b18;
+  --bg-secondary: #151412;
+  --bg-tertiary: #262320;
+  --text-primary: #f0eee8;
+  --text-secondary: #b8b1a8;
+  --border-color: #3c3833;
+  --primary-color: #8f8981;
+  --error-color: #f2b8b5;
+  --ok-color: #6dd58c;
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 28px; color: var(--text-primary); background: var(--bg-secondary); font: 14px/1.5 system-ui, sans-serif; }
+.page { max-width: 1100px; margin: 0 auto; }
+h1 { margin: 0 0 6px; font-size: 24px; }
+.sub { margin: 0 0 22px; color: var(--text-secondary); }
+section { margin-bottom: 22px; padding: 18px; border: 1px solid var(--border-color); border-radius: var(--radius); background: var(--bg-primary); }
+h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.metric { padding: 12px; border-radius: var(--radius); background: var(--bg-tertiary); }
+.metric .label { color: var(--text-secondary); font-size: 12px; }
+.metric .value { font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.pairs { display: grid; grid-template-columns: 130px 1fr; gap: 6px 14px; }
+.pairs dt { color: var(--text-secondary); }
+.pairs dd { margin: 0; overflow-wrap: anywhere; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: 8px 10px; border-top: 1px solid var(--border-color); text-align: left; font-variant-numeric: tabular-nums; }
+th { border-top: none; color: var(--text-secondary); font-weight: 500; font-size: 12px; }
+td.mono { font-family: ui-monospace, monospace; font-size: 12px; }
+button { padding: 5px 10px; border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary); background: var(--bg-tertiary); font: inherit; font-size: 12px; cursor: pointer; }
+button:hover { border-color: var(--primary-color); }
+button:disabled { cursor: not-allowed; opacity: .6; }
+.error { color: var(--error-color); }
+.ok { color: var(--ok-color); }
+.muted { color: var(--text-secondary); }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>ZCode 反代</h1>
+  <p class="sub">模拟 ZCode 客户端消费 Coding Plan 额度，注册为 zcode/* 模型。</p>
+  <section>
+    <h2>运行配置</h2>
+    <dl class="pairs" id="config"><dd class="muted">加载中…</dd></dl>
+  </section>
+  <section>
+    <h2>额度消耗</h2>
+    <div class="grid" id="totals"></div>
+    <p class="muted" id="lastError"></p>
+  </section>
+  <section>
+    <h2>模型</h2>
+    <table><thead><tr><th>模型 ID</th><th>上游模型</th><th>请求</th><th>失败</th><th>输入 tokens</th><th>输出 tokens</th></tr></thead><tbody id="models"></tbody></table>
+  </section>
+  <section>
+    <h2>账号</h2>
+    <table><thead><tr><th>名称</th><th>Key</th><th>状态</th><th>连通性</th></tr></thead><tbody id="accounts"></tbody></table>
+  </section>
+</div>
+<script>
+(function () {
+  "use strict";
+  var API = "/v0/management/zcode";
+  try {
+    var parentRoot = window.parent && window.parent !== window ? window.parent.document.documentElement : null;
+    if (parentRoot) {
+      var sync = function () {
+        var theme = parentRoot.getAttribute("data-theme");
+        if (theme === "white" || theme === "dark") document.documentElement.setAttribute("data-theme", theme);
+        else document.documentElement.removeAttribute("data-theme");
+        var bg = getComputedStyle(parentRoot).getPropertyValue("--bg-secondary").trim();
+        if (bg) document.body.style.backgroundColor = bg;
+      };
+      sync();
+      new MutationObserver(sync).observe(parentRoot, { attributes: true, attributeFilter: ["data-theme"] });
+    }
+  } catch (_) {}
+
+  function managementKey() {
+    try {
+      var raw = localStorage.getItem("cli-proxy-auth");
+      if (!raw) return "";
+      var text = raw;
+      if (raw.indexOf("enc::v1::") === 0) {
+        var bytes = Uint8Array.from(atob(raw.slice(9)), function (c) { return c.charCodeAt(0); });
+        var seed = new TextEncoder().encode("cli-proxy-api-webui::secure-storage|" + location.host + "|" + navigator.userAgent);
+        for (var i = 0; i < bytes.length; i++) bytes[i] ^= seed[i % seed.length];
+        text = new TextDecoder().decode(bytes);
+      }
+      var parsed = JSON.parse(text);
+      return parsed && parsed.state && typeof parsed.state.managementKey === "string" ? parsed.state.managementKey : "";
+    } catch (_) { return ""; }
+  }
+
+  function request(path, body, method) {
+    var headers = { "Content-Type": "application/json" };
+    var key = managementKey();
+    if (key) headers.Authorization = "Bearer " + key;
+    return fetch(API + path, { method: method || (body === undefined ? "GET" : "POST"), headers: headers, body: body === undefined ? undefined : JSON.stringify(body) })
+      .then(function (response) {
+        return response.json().catch(function () { return {}; }).then(function (data) {
+          if (!response.ok) throw new Error(data.error || ("HTTP " + response.status));
+          return data;
+        });
+      });
+  }
+
+  function cell(row, value, className) {
+    var td = document.createElement("td");
+    if (className) td.className = className;
+    td.textContent = value === undefined || value === null || value === "" ? "-" : String(value);
+    row.appendChild(td);
+    return td;
+  }
+
+  function metric(parent, label, value) {
+    var box = document.createElement("div");
+    box.className = "metric";
+    var name = document.createElement("div");
+    name.className = "label";
+    name.textContent = label;
+    var amount = document.createElement("div");
+    amount.className = "value";
+    amount.textContent = value;
+    box.append(name, amount);
+    parent.appendChild(box);
+  }
+
+  function number(value) {
+    return Number(value || 0).toLocaleString();
+  }
+
+  function renderConfig(data) {
+    var list = document.getElementById("config");
+    list.textContent = "";
+    [["上游地址", data.base_url], ["客户端版本", data.client_version], ["请求超时", data.request_timeout + " 秒"]].forEach(function (pair) {
+      var dt = document.createElement("dt");
+      dt.textContent = pair[0];
+      var dd = document.createElement("dd");
+      dd.textContent = pair[1];
+      list.append(dt, dd);
+    });
+  }
+
+  function renderTotals(counters) {
+    var box = document.getElementById("totals");
+    box.textContent = "";
+    metric(box, "请求", number(counters.Requests));
+    metric(box, "失败", number(counters.Failures));
+    metric(box, "输入 tokens", number(counters.InputTokens));
+    metric(box, "输出 tokens", number(counters.OutputTokens));
+    metric(box, "最近耗时", counters.LastLatency ? (Math.round(counters.LastLatency / 1000000)) + " ms" : "-");
+    var lastError = document.getElementById("lastError");
+    lastError.textContent = counters.LastError ? "最近错误：" + counters.LastError : "";
+    lastError.className = counters.LastError ? "error" : "muted";
+  }
+
+  function renderModels(models, perModel) {
+    var body = document.getElementById("models");
+    body.textContent = "";
+    var counts = {};
+    (perModel || []).forEach(function (entry) { counts[entry.Model] = entry; });
+    models.forEach(function (model) {
+      var entry = counts[model.ID] || {};
+      delete counts[model.ID];
+      var row = document.createElement("tr");
+      cell(row, model.ID, "mono");
+      cell(row, model.Name, "mono");
+      cell(row, number(entry.Requests));
+      cell(row, number(entry.Failures));
+      cell(row, number(entry.InputTokens));
+      cell(row, number(entry.OutputTokens));
+      body.appendChild(row);
+    });
+    Object.keys(counts).forEach(function (name) {
+      var entry = counts[name];
+      var row = document.createElement("tr");
+      cell(row, entry.Model, "mono");
+      cell(row, entry.Model, "mono");
+      cell(row, number(entry.Requests));
+      cell(row, number(entry.Failures));
+      cell(row, number(entry.InputTokens));
+      cell(row, number(entry.OutputTokens));
+      body.appendChild(row);
+    });
+    if (!body.children.length) {
+      var empty = document.createElement("tr");
+      cell(empty, "暂无数据");
+      body.appendChild(empty);
+    }
+  }
+
+  function renderAccounts(accounts) {
+    var body = document.getElementById("accounts");
+    body.textContent = "";
+    if (!accounts.length) {
+      var empty = document.createElement("tr");
+      cell(empty, "未配置凭据");
+      body.appendChild(empty);
+      return;
+    }
+    accounts.forEach(function (account) {
+      var row = document.createElement("tr");
+      cell(row, account.label || account.name);
+      cell(row, account.key_mask || "-", "mono");
+      cell(row, account.disabled ? "已禁用" : (account.status || "启用"));
+      var action = document.createElement("td");
+      var button = document.createElement("button");
+      button.textContent = "探测";
+      var result = document.createElement("span");
+      result.className = "muted";
+      button.onclick = function () {
+        button.disabled = true;
+        result.className = "muted";
+        result.textContent = "检测中…";
+        request("/probe", { auth_index: account.auth_index }).then(function (data) {
+          result.className = data.ok ? "ok" : "error";
+          result.textContent = data.ok ? "可用" : (data.detail || "不可用");
+        }).catch(function (error) {
+          result.className = "error";
+          result.textContent = error.message;
+        }).then(function () {
+          button.disabled = false;
+        });
+      };
+      action.append(button, document.createTextNode(" "), result);
+      row.appendChild(action);
+      body.appendChild(row);
+    });
+  }
+
+  if (!managementKey()) {
+    document.getElementById("totals").textContent = "";
+    var hint = document.createElement("p");
+    hint.className = "error";
+    hint.textContent = "在管理中心的登录设置里勾选“记住密码”后，本页才能读取管理密钥。";
+    document.getElementById("totals").appendChild(hint);
+    return;
+  }
+
+  request("/status").then(function (data) {
+    renderConfig(data);
+    renderTotals(data.counters || {});
+    renderModels(data.models || [], (data.counters || {}).PerModel);
+    renderAccounts(data.accounts || []);
+  }).catch(function (error) {
+    document.getElementById("totals").textContent = "";
+    var failure = document.createElement("p");
+    failure.className = "error";
+    failure.textContent = error.message;
+    document.getElementById("totals").appendChild(failure);
+  });
+})();
+</script>
+</body>
+</html>
