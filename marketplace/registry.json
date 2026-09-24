@@ -10,8 +10,7 @@
       "repository": "https://github.com/lengjingxu/CLIProxyAPI-ZCode",
       "homepage": "https://github.com/lengjingxu/CLIProxyAPI-ZCode",
       "license": "MIT",
-      "tags": ["zcode", "bigmodel", "zai", "provider", "streaming"],
-      "install": {"type": "github-release"}
+      "tags": ["zcode", "bigmodel", "zai", "provider", "streaming"]
     }
   ]
 }
