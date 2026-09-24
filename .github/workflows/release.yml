@@ -44,7 +44,7 @@ jobs:
           docker run --rm --platform linux/amd64 -v "$PWD:/src" -w /src \
             -e CGO_ENABLED=1 -e GOOS=linux -e GOARCH=amd64 \
             golang:1.24-bookworm sh -ec \
-            'go test -mod=vendor . && go build -mod=vendor -trimpath -buildmode=c-shared -ldflags="-s -w" -o dist/zcode.so .'
+            'go test -mod=vendor . && go build -mod=vendor -trimpath -buildvcs=false -buildmode=c-shared -ldflags="-s -w" -o dist/zcode.so .'
       - name: Package Linux amd64
         shell: bash
         run: |
@@ -78,7 +78,7 @@ jobs:
           set -euo pipefail
           go test -mod=vendor .
           mkdir -p dist
-          go build -mod=vendor -trimpath -buildmode=c-shared -ldflags='-s -w' -o dist/zcode.dylib .
+          go build -mod=vendor -trimpath -buildvcs=false -buildmode=c-shared -ldflags='-s -w' -o dist/zcode.dylib .
       - name: Package macOS arm64
         shell: bash
         run: |
