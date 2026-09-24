@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Test and build on Debian 12
+      - name: Test and build on Debian 10 (glibc 2.28)
         shell: bash
         run: |
           set -euo pipefail
