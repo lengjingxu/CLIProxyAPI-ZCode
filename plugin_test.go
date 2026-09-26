@@ -171,7 +171,7 @@ func TestCredentialFromAuthFile(t *testing.T) {
 	if _, errEmpty := credentialFromAuthFile([]byte(`{"type":"zcode"}`)); errEmpty == nil {
 		t.Fatal("expected an error for an auth file without a key")
 	}
-	if got := maskKey("0123456789abcdef0123456789abcdef.FAKESECRETVALUE"); got != "d8d917fd...XfxY" {
+	if got := maskKey("0123456789abcdef0123456789abcdef.FAKESECRETVALUE"); got != "01234567...ALUE" {
 		t.Fatalf("maskKey = %q", got)
 	}
 }
